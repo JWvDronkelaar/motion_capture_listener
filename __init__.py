@@ -1,19 +1,15 @@
-bl_info = {
-    "name": "UDP Tracker Bridge",
-    "blender": (4, 0, 0),
-    "category": "Object",
-}
-
 import bpy
 import asyncio
 import socket
 import json
 
+from . update_blender_scene import update_blender_scene
+
 # Configuration
 HOST = "127.0.0.1"
 PORT = 9999
-TIMEOUT = 3.0  # seconds to wait for first packet
-INACTIVITY_TIMEOUT = 3.0  # seconds of silence before auto-stop
+TIMEOUT = 3.0  # seconds to wait for first packet before aborting start
+INACTIVITY_TIMEOUT = 3.0  # seconds of receiving no data before auto-stop
 
 # Keep a reference to avoid garbage collection
 _udp_task = None
@@ -33,14 +29,13 @@ async def udp_listener():
     print(f"[UDP Tracker] Listening on {HOST}:{PORT}")
 
     first_packet_received = False
-    # start_time = loop.time()
-    last_packet_time = loop.time() # does this default to 0 at initialization?
+    last_packet_time = loop.time()
 
     while not _stop_flag:
         try:
-            # Wait TIMEOUT seconds for a packet, so we can periodically check stop_flag
+            # Wait 1 second for a packet, so we can periodically check stop_flag
             data = await asyncio.wait_for(loop.sock_recv(sock, 4096), timeout=1.0)
-            objs = json.loads(data.decode("utf-8"))
+            messages = json.loads(data.decode("utf-8"))
 
             if not first_packet_received:
                 first_packet_received = True
@@ -49,18 +44,8 @@ async def udp_listener():
             # Update last active time
             last_packet_time = loop.time()
 
-            # Update Blender scene (must happen in main thread)
-            def update_objects():
-                for item in objs:
-                    name = item["id"]
-                    x, y, z = item["x"], item["y"], item["z"]
-                    obj = bpy.data.objects.get(name)
-                    if not obj:
-                        obj = bpy.data.objects.new(name, None)
-                        bpy.context.scene.collection.objects.link(obj)
-                    obj.location = (x, y, z)
-
-            bpy.app.timers.register(update_objects, first_interval=0.0)
+            # Schedule Blender update in main thread
+            bpy.app.timers.register(lambda: update_blender_scene(messages), first_interval=0.0)
 
         except asyncio.TimeoutError:
             now = loop.time()
