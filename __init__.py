@@ -9,8 +9,11 @@ import asyncio
 import socket
 import json
 
+# Configuration
 HOST = "127.0.0.1"
 PORT = 9999
+TIMEOUT = 3.0  # seconds to wait for first packet
+INACTIVITY_TIMEOUT = 3.0  # seconds of silence before auto-stop
 
 # Keep a reference to avoid garbage collection
 _udp_task = None
@@ -29,10 +32,22 @@ async def udp_listener():
 
     print(f"[UDP Tracker] Listening on {HOST}:{PORT}")
 
+    first_packet_received = False
+    # start_time = loop.time()
+    last_packet_time = loop.time() # does this default to 0 at initialization?
+
     while not _stop_flag:
         try:
-            data = await loop.sock_recv(sock, 4096)
+            # Wait TIMEOUT seconds for a packet, so we can periodically check stop_flag
+            data = await asyncio.wait_for(loop.sock_recv(sock, 4096), timeout=1.0)
             objs = json.loads(data.decode("utf-8"))
+
+            if not first_packet_received:
+                first_packet_received = True
+                print("[UDP Tracker] First packet received. Server is up and running.")
+
+            # Update last active time
+            last_packet_time = loop.time()
 
             # Update Blender scene (must happen in main thread)
             def update_objects():
@@ -46,6 +61,19 @@ async def udp_listener():
                     obj.location = (x, y, z)
 
             bpy.app.timers.register(update_objects, first_interval=0.0)
+
+        except asyncio.TimeoutError:
+            now = loop.time()
+            # Timeout when starting listener and waiting for first packet data
+            if not first_packet_received and (now - last_packet_time) > TIMEOUT:
+                print(f"[UDP Tracker] ❌ It took over {TIMEOUT} seconds to receive data — was the server started?")
+                _stop_flag = True
+            
+            # Timeout for inactivity
+            elif first_packet_received and now - last_packet_time > INACTIVITY_TIMEOUT:
+                print(F"[UDP Tracker] ❌ No data received for {INACTIVITY_TIMEOUT} seconds — has the server stopped?")
+                _stop_flag = True
+            continue
 
         except Exception as e:
             print("UDP error:", e)

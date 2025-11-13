@@ -4,6 +4,7 @@ import time
 import json
 import math
 
+# Configuration
 HOST = "127.0.0.1"
 PORT = 9999
 FPS = 24
