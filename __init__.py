@@ -124,7 +124,7 @@ def start_udp_loop():
 
 def stop_udp_loop():
     global _stop_flag
-    if not _listener_state:
+    if not _listener_state in (ListenerState.CONNECTING, ListenerState.RUNNING):
         print("[UDP Tracker] Not currently running.")
         return
     _stop_flag = True
