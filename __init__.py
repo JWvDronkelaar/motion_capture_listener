@@ -1,7 +1,9 @@
 import bpy
+
 import asyncio
-import socket
+from enum import Enum, auto
 import json
+import socket
 
 from . update_blender_scene import update_blender_scene
 
@@ -11,10 +13,15 @@ PORT = 9999
 TIMEOUT = 3.0               # seconds to wait for first packet before aborting start
 INACTIVITY_TIMEOUT = 3.0    # seconds of receiving no data before auto-stop
 
+class ListenerState(Enum):
+    STOPPED = auto()
+    CONNECTING = auto()
+    RUNNING = auto()
+
 # State
 _udp_task = None
 _stop_flag = False
-_listener_running = False
+_listener_state = ListenerState.STOPPED
 
 
 def refresh_udp_panel():
@@ -28,8 +35,9 @@ def refresh_udp_panel():
 
 async def udp_listener():
     """Async UDP listener that updates Blender empties."""
-    global _stop_flag, _listener_running
-    _listener_running = True
+    global _stop_flag, _listener_state
+    _listener_state = ListenerState.CONNECTING
+    bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)
     
     loop = asyncio.get_running_loop()
 
@@ -52,9 +60,10 @@ async def udp_listener():
 
                 if not first_packet_received:
                     first_packet_received = True
+                    _listener_state = ListenerState.RUNNING
+                    bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)
                     print("[UDP Tracker] First packet received. Server is up and running.")
 
-                # Update last active time
                 last_packet_time = loop.time()
 
                 # Schedule Blender update in main thread (safe)
@@ -82,15 +91,15 @@ async def udp_listener():
 
     finally:
         sock.close()
-        _listener_running = False
+        _listener_state = ListenerState.STOPPED
         bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)  # refresh again on stop
         print("[UDP Tracker] Listener stopped.")
         
 
 def start_udp_loop():
-    global _udp_task, _stop_flag, _listener_running
+    global _udp_task, _stop_flag, _listener_state
 
-    if _listener_running:
+    if _listener_state in (ListenerState.CONNECTING, ListenerState.RUNNING):
         print("[UDP Tracker] Listener is already running.")
         return
 
@@ -115,7 +124,7 @@ def start_udp_loop():
 
 def stop_udp_loop():
     global _stop_flag
-    if not _listener_running:
+    if not _listener_state:
         print("[UDP Tracker] Not currently running.")
         return
     _stop_flag = True
@@ -148,16 +157,21 @@ class UDP_PT_Panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        global _listener_running
+        global _listener_state
 
-        if _listener_running:
-            row = layout.row()
-            row.label(text="Status: Running", icon="CHECKMARK")
-            layout.operator("udp_tracker.stop", text="Stop Listener", icon="PAUSE")
+        col = layout.column(align=True)
+
+        if _listener_state == ListenerState.RUNNING:
+            col.label(text="Status: Running", icon="CHECKMARK")
+            col.operator("udp_tracker.stop", text="Stop Listener", icon="PAUSE")
+
+        elif _listener_state == ListenerState.CONNECTING:
+            col.label(text="Status: Connecting...", icon="TIME")
+            col.operator("udp_tracker.stop", text="Cancel Connection", icon="CANCEL")
+
         else:
-            row = layout.row()
-            row.label(text="Status: Stopped", icon="X")
-            layout.operator("udp_tracker.start", text="Start Listener", icon="PLAY")
+            col.label(text="Status: Stopped", icon="X")
+            col.operator("udp_tracker.start", text="Start Listener", icon="PLAY")
 
 
 def register():
