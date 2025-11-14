@@ -4,6 +4,7 @@ import asyncio
 from enum import Enum, auto
 import json
 import socket
+import threading
 
 from . update_blender_scene import update_blender_scene
 
@@ -12,11 +13,14 @@ HOST = "127.0.0.1"
 PORT = 9999
 TIMEOUT = 3.0               # seconds to wait for first packet before aborting start
 INACTIVITY_TIMEOUT = 3.0    # seconds of receiving no data before auto-stop
+RECONNECT_DELAY = 2.0       # seconds between reconnect attempts when enabled
+
 
 class ListenerState(Enum):
     STOPPED = auto()
     CONNECTING = auto()
     RUNNING = auto()
+
 
 # State
 _udp_task = None
@@ -24,8 +28,10 @@ _stop_flag = False
 _listener_state = ListenerState.STOPPED
 
 
+# ---------------------------------------------------------
+# UI refresh utility (unchanged)
+# ---------------------------------------------------------
 def refresh_udp_panel():
-    """Force refresh of the 3D View UI panel."""
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
             if area.type == 'VIEW_3D':
@@ -33,8 +39,46 @@ def refresh_udp_panel():
     return None
 
 
+# ---------------------------------------------------------
+# NEW: outer loop that handles reconnecting
+# ---------------------------------------------------------
+async def udp_listener_outer():
+    """Outer async loop that can restart the inner listener."""
+    global _stop_flag, _listener_state
+    scene = bpy.context.scene
+
+    while not _stop_flag:
+        # Attempt connection
+        try:
+            await udp_listener()     # <--- existing inner listener
+        except Exception as e:
+            print("[UDP Tracker] Listener error:", e)
+
+        # If auto-reconnect is OFF → stop immediately
+        if not scene.udp_auto_reconnect:
+            break
+
+        # If manually stopped → do not reconnect
+        if _stop_flag:
+            break
+
+        # Only reconnect if previous state was CONNECTING or RUNNING
+        if _listener_state in (ListenerState.CONNECTING, ListenerState.RUNNING):
+            print(f"[UDP Tracker] Reconnecting in {RECONNECT_DELAY} seconds...")
+            _listener_state = ListenerState.CONNECTING
+            bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)
+            await asyncio.sleep(RECONNECT_DELAY)
+
+    # Fully stopped
+    _listener_state = ListenerState.STOPPED
+    bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)
+    print("[UDP Tracker] Listener fully stopped.")
+
+
+# ---------------------------------------------------------
+# EXISTING inner listener (unchanged except state reporting)
+# ---------------------------------------------------------
 async def udp_listener():
-    """Async UDP listener that updates Blender empties."""
     global _stop_flag, _listener_state
     _listener_state = ListenerState.CONNECTING
     bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)
@@ -54,7 +98,6 @@ async def udp_listener():
     try:
         while not _stop_flag:
             try:
-                # Wait 1 second for a packet, so we can periodically check stop_flag
                 data = await asyncio.wait_for(loop.sock_recv(sock, 4096), timeout=1.0)
                 messages = json.loads(data.decode("utf-8"))
 
@@ -66,7 +109,6 @@ async def udp_listener():
 
                 last_packet_time = loop.time()
 
-                # Schedule Blender update in main thread (safe)
                 bpy.app.timers.register(
                     lambda msgs=messages: update_blender_scene(msgs),
                     first_interval=0.0
@@ -74,15 +116,15 @@ async def udp_listener():
 
             except asyncio.TimeoutError:
                 now = loop.time()
-                # Timeout when starting listener and waiting for first packet data
+
                 if not first_packet_received and (now - last_packet_time) > TIMEOUT:
                     print(f"[UDP Tracker] It took over {TIMEOUT} seconds to receive data — was the server started?")
-                    _stop_flag = True
-                
-                # Timeout for inactivity
+                    break
+
                 elif first_packet_received and now - last_packet_time > INACTIVITY_TIMEOUT:
-                    print(F"[UDP Tracker] No data received for {INACTIVITY_TIMEOUT} seconds — has the server stopped?")
-                    _stop_flag = True
+                    print(f"[UDP Tracker] No data received for {INACTIVITY_TIMEOUT} seconds — has the server stopped?")
+                    break
+
                 continue
 
             except Exception as e:
@@ -91,11 +133,12 @@ async def udp_listener():
 
     finally:
         sock.close()
-        _listener_state = ListenerState.STOPPED
-        bpy.app.timers.register(refresh_udp_panel, first_interval=0.0)  # refresh again on stop
-        print("[UDP Tracker] Listener stopped.")
-        
+        print("[UDP Tracker] Inner listener stopped.")
 
+
+# ---------------------------------------------------------
+# Threading & control logic
+# ---------------------------------------------------------
 def start_udp_loop():
     global _udp_task, _stop_flag, _listener_state
 
@@ -110,13 +153,12 @@ def start_udp_loop():
 
     def run_loop():
         try:
-            loop.run_until_complete(udp_listener())
+            loop.run_until_complete(udp_listener_outer())  # <-- now uses outer loop
         except Exception as e:
             print("Loop exception:", e)
         finally:
             loop.close()
 
-    import threading
     t = threading.Thread(target=run_loop, daemon=True)
     t.start()
     _udp_task = t
@@ -124,12 +166,15 @@ def start_udp_loop():
 
 def stop_udp_loop():
     global _stop_flag
-    if not _listener_state in (ListenerState.CONNECTING, ListenerState.RUNNING):
+    if _listener_state == ListenerState.STOPPED:
         print("[UDP Tracker] Not currently running.")
         return
     _stop_flag = True
 
 
+# ---------------------------------------------------------
+# Operators
+# ---------------------------------------------------------
 class UDP_OT_Start(bpy.types.Operator):
     bl_idname = "udp_tracker.start"
     bl_label = "Start UDP Tracker"
@@ -148,6 +193,9 @@ class UDP_OT_Stop(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ---------------------------------------------------------
+# Panel
+# ---------------------------------------------------------
 class UDP_PT_Panel(bpy.types.Panel):
     bl_label = "UDP Tracker Bridge"
     bl_idname = "UDP_PT_TrackerPanel"
@@ -157,7 +205,10 @@ class UDP_PT_Panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        scene = context.scene
         global _listener_state
+
+        layout.prop(scene, "udp_auto_reconnect")
 
         col = layout.column(align=True)
 
@@ -174,13 +225,24 @@ class UDP_PT_Panel(bpy.types.Panel):
             col.operator("udp_tracker.start", text="Start Listener", icon="PLAY")
 
 
+# ---------------------------------------------------------
+# Registration
+# ---------------------------------------------------------
 def register():
+    bpy.types.Scene.udp_auto_reconnect = bpy.props.BoolProperty(
+        name="Auto Reconnect",
+        description="Automatically try to reconnect when the server stops",
+        default=False,
+    )
+
     bpy.utils.register_class(UDP_OT_Start)
     bpy.utils.register_class(UDP_OT_Stop)
     bpy.utils.register_class(UDP_PT_Panel)
 
 
 def unregister():
+    del bpy.types.Scene.udp_auto_reconnect
+
     bpy.utils.unregister_class(UDP_OT_Start)
     bpy.utils.unregister_class(UDP_OT_Stop)
     bpy.utils.unregister_class(UDP_PT_Panel)
