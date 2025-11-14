@@ -76,12 +76,12 @@ async def udp_listener():
                 now = loop.time()
                 # Timeout when starting listener and waiting for first packet data
                 if not first_packet_received and (now - last_packet_time) > TIMEOUT:
-                    print(f"[UDP Tracker] ❌ It took over {TIMEOUT} seconds to receive data — was the server started?")
+                    print(f"[UDP Tracker] It took over {TIMEOUT} seconds to receive data — was the server started?")
                     _stop_flag = True
                 
                 # Timeout for inactivity
                 elif first_packet_received and now - last_packet_time > INACTIVITY_TIMEOUT:
-                    print(F"[UDP Tracker] ❌ No data received for {INACTIVITY_TIMEOUT} seconds — has the server stopped?")
+                    print(F"[UDP Tracker] No data received for {INACTIVITY_TIMEOUT} seconds — has the server stopped?")
                     _stop_flag = True
                 continue
 
