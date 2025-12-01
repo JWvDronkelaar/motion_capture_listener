@@ -6,7 +6,7 @@ import json
 import socket
 import threading
 
-from . update_blender_scene import update_blender_scene
+from .TrackerContainer import TrackerContainer
 
 # Configuration
 HOST = "127.0.0.1"
@@ -26,6 +26,7 @@ class ListenerState(Enum):
 _udp_task = None
 _stop_flag = False
 _listener_state = ListenerState.STOPPED
+_tracker_container = None
 
 
 # ---------------------------------------------------------
@@ -110,7 +111,7 @@ async def udp_listener():
                 last_packet_time = loop.time()
 
                 bpy.app.timers.register(
-                    lambda msgs=messages: update_blender_scene(msgs),
+                    lambda msgs=messages: _tracker_container.update(msgs),
                     first_interval=0.0
                 )
 
@@ -140,7 +141,10 @@ async def udp_listener():
 # Threading & control logic
 # ---------------------------------------------------------
 def start_udp_loop():
-    global _udp_task, _stop_flag, _listener_state
+    global _udp_task, _stop_flag, _listener_state, _tracker_container
+
+    if not _tracker_container:
+        _tracker_container = TrackerContainer()
 
     if _listener_state in (ListenerState.CONNECTING, ListenerState.RUNNING):
         print("[UDP Tracker] Listener is already running.")
@@ -152,11 +156,16 @@ def start_udp_loop():
     asyncio.set_event_loop(loop)
 
     def run_loop():
+        global _tracker_container
+        
         try:
             loop.run_until_complete(udp_listener_outer())  # <-- now uses outer loop
         except Exception as e:
             print("Loop exception:", e)
         finally:
+            if _tracker_container:
+                _tracker_container.destroy()
+                _tracker_container = None
             loop.close()
 
     t = threading.Thread(target=run_loop, daemon=True)
