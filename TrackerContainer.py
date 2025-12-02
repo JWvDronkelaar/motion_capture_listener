@@ -33,6 +33,9 @@ class TrackerContainer:
 
             self.update_tracker(tracker_id, location)
 
+        active_ids = {data["id"] for data in tracking_data}
+        self.prune_inactive_trackers(active_ids)
+
 
     def add_tracker(self, tracker_id, location):
         mesh = self.trackers_obj.data
@@ -86,6 +89,34 @@ class TrackerContainer:
         self._rebuild_tracker_map()
 
         print(f"Deleted tracker ID {tracker_id} from TrackerContainer.")
+
+
+    def prune_inactive_trackers(self, active_tracker_ids):
+        mesh = self.trackers_obj.data
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+
+        if hasattr(bm.verts, "ensure_lookup_table"):
+            bm.verts.ensure_lookup_table()
+
+        attr = mesh.attributes["tracker_id"].data
+
+        to_remove = []
+        for i, item in enumerate(attr):
+            tracker_id = item.value
+            if tracker_id not in active_tracker_ids:
+                to_remove.append(bm.verts[i])
+
+        for v in to_remove:
+            bm.verts.remove(v)
+
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+
+        self._rebuild_tracker_map()
+
+        print(f"Pruned inactive trackers. Remaining active trackers: {len(self.tracker_map)}.")
 
 
     def clear_trackers(self):
