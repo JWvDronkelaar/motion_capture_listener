@@ -164,7 +164,7 @@ def start_udp_loop():
             print("Loop exception:", e)
         finally:
             if _tracker_container:
-                _tracker_container.destroy()
+                # _tracker_container.clear()  # TODO: enable later, useful for debugging for now
                 _tracker_container = None
             loop.close()
 
