@@ -4,12 +4,12 @@ import bmesh
 import mathutils
 from datetime import datetime
 
-from .utility import get_active_area_bounds
+from .Bounds import Bounds
 
 class TrackerContainer:
     def __init__(self):
         self.trackers_obj = None
-        self.active_area_obj = None
+        self.bounds = None
 
         # TODO: change into namedtuple or dataclass
         # tracker_map:
@@ -59,47 +59,14 @@ class TrackerContainer:
 
             print("TrackerContainer: Created new tracker_container object.")
 
-        # -------------------------------------------------------------
-        # 2. Create or reuse tracker_active_area mesh plane
-        # -------------------------------------------------------------
+
         AREA_NAME = "tracker_active_area"
         area_obj = bpy.data.objects.get(AREA_NAME)
 
-        if area_obj is not None:
-            print("TrackerContainer: Found existing tracker_active_area. Reusing.")
-            self.active_area_obj = area_obj
-        else:
-            # Create a 2×2 plane centered on origin
-            mesh = bpy.data.meshes.new("tracker_active_area_mesh")
-            bm = bmesh.new()
-            bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=1)  # 2×2 plane
-            bm.to_mesh(mesh)
-            bm.free()
+        self.bounds = Bounds(area_obj)
 
-            area_obj = bpy.data.objects.new(AREA_NAME, mesh)
-            bpy.context.scene.collection.objects.link(area_obj)
-            self.active_area_obj = area_obj
-
-            print("TrackerContainer: Created new tracker_active_area plane.")
-
-        print("Initialized TrackerContainer: mesh reset + tracker_id attribute ensured + active area ready.")
-
-
-
-    def is_within_active_area(self, location):
-        bounds = get_active_area_bounds(self.active_area_obj)
-        if bounds is None:
-            return True  # Fallback: allow all
-
-        xmin, xmax, ymin, ymax = bounds
-
-        return (xmin <= location.x <= xmax) and (ymin <= location.y <= ymax)
-
-
-    # ---------------------------------------------------------------------
-    # MAIN UPDATE LOOP
-    # ---------------------------------------------------------------------
-    def update(self, tracking_data, grace_seconds=2.0):
+    
+    def update(self, tracking_data):
         now = datetime.now()
 
         # Update all incoming trackers
@@ -107,21 +74,12 @@ class TrackerContainer:
             tracker_id = tracker_data["id"]
             location = mathutils.Vector((tracker_data["x"], tracker_data["y"], tracker_data["z"]))
             
-            # TODO: this is incredibly inefficient, optimize later
-            if not self.is_within_active_area(location):
-                if tracker_id in self.tracker_map:
-                    self.delete_tracker(tracker_id)
-                continue
-            
             self.update_tracker(tracker_id, location)
 
-        # Prune trackers not updated recently
-        self.prune_inactive_trackers(grace_seconds)
+        self.prune_out_of_bounds_trackers()
+        self.prune_inactive_trackers()
 
 
-    # ---------------------------------------------------------------------
-    # ADD TRACKER
-    # ---------------------------------------------------------------------
     def add_tracker(self, tracker_id, location):
         mesh = self.trackers_obj.data
 
@@ -139,12 +97,9 @@ class TrackerContainer:
             "updated_at": now,
         }
 
-        print(f"Added tracker ID {tracker_id} at location {location}.")
+        # print(f"Added tracker ID {tracker_id} at location {location}.")
 
 
-    # ---------------------------------------------------------------------
-    # UPDATE TRACKER
-    # ---------------------------------------------------------------------
     def update_tracker(self, tracker_id, location):
         mesh = self.trackers_obj.data
         now = datetime.now()
@@ -156,12 +111,10 @@ class TrackerContainer:
         else:
             self.add_tracker(tracker_id, location)
 
-        print(f"Updated tracker ID {tracker_id} to location {location}.")
+        # print(f"Updated tracker ID {tracker_id} to location {location}.")
 
 
-    # ---------------------------------------------------------------------
-    # DELETE TRACKER
-    # ---------------------------------------------------------------------
+    # TODO: isn't it slow to do this one by one since after each delete the mapping is rebuilt?
     def delete_tracker(self, tracker_id):
         mesh = self.trackers_obj.data
 
@@ -186,13 +139,38 @@ class TrackerContainer:
         # Rebuild mapping
         self._rebuild_tracker_map()
 
-        print(f"Deleted tracker ID {tracker_id} from TrackerContainer.")
+        # print(f"Deleted tracker ID {tracker_id} from TrackerContainer.")
 
 
-    # ---------------------------------------------------------------------
-    # PRUNE INACTIVE WITH GRACE PERIOD
-    # ---------------------------------------------------------------------
-    def prune_inactive_trackers(self, grace_seconds):
+    def prune_out_of_bounds_trackers(self):
+        mesh = self.trackers_obj.data
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
+
+        to_remove = []
+
+        for vertex in bm.verts:
+            if not self.bounds.is_within_active_area(vertex.co):
+                to_remove.append(bm.verts[vertex.index])
+
+        delete_count = len(to_remove)
+
+        # Delete vertices
+        for v in to_remove:
+            bm.verts.remove(v)
+
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+
+        self._rebuild_tracker_map()
+
+        print(f"Pruned {delete_count} out of bounds trackers. Remaining active trackers: {len(self.tracker_map)}.")
+
+
+    def prune_inactive_trackers(self, grace_seconds=0.5):
         mesh = self.trackers_obj.data
         now = datetime.now()
 
@@ -211,6 +189,8 @@ class TrackerContainer:
                 vertex_id = entry["vertex_id"]
                 to_remove.append(bm.verts[vertex_id])
 
+        delete_count = len(to_remove)
+
         # Delete vertices
         for v in to_remove:
             bm.verts.remove(v)
@@ -221,12 +201,9 @@ class TrackerContainer:
 
         self._rebuild_tracker_map()
 
-        print(f"Pruned inactive trackers. Remaining active trackers: {len(self.tracker_map)}.")
+        print(f"Pruned {delete_count} inactive trackers. Remaining active trackers: {len(self.tracker_map)}.")
 
 
-    # ---------------------------------------------------------------------
-    # CLEAR TRACKERS
-    # ---------------------------------------------------------------------
     def clear_trackers(self):
         mesh = self.trackers_obj.data
         mesh.clear_geometry()
@@ -234,17 +211,11 @@ class TrackerContainer:
         print("Cleared all trackers from TrackerContainer.")
 
 
-    # ---------------------------------------------------------------------
-    # DESTROY
-    # ---------------------------------------------------------------------
     def destroy(self):
         bpy.data.objects.remove(self.trackers_obj, do_unlink=True)
         print("Destroyed TrackerContainer and removed from scene.")
 
 
-    # ---------------------------------------------------------------------
-    # REBUILD TRACKER MAP
-    # ---------------------------------------------------------------------
     def _rebuild_tracker_map(self):
         """
         After BMesh rewrites the vertices, tracker_id values are still stored

@@ -145,6 +145,8 @@ def start_udp_loop():
 
     if not _tracker_container:
         _tracker_container = TrackerContainer()
+    else:
+        _tracker_container.initialize()
 
     if _listener_state in (ListenerState.CONNECTING, ListenerState.RUNNING):
         print("[UDP Tracker] Listener is already running.")
