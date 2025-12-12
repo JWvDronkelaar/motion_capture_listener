@@ -44,14 +44,18 @@ class TrackerContainer:
             # Remove old tracker_id attribute if present to avoid conflicts
             if "tracker_id" in mesh.attributes:
                 mesh.attributes.remove(mesh.attributes["tracker_id"])
+            if "r" in mesh.attributes:
+                mesh.attributes.remove(mesh.attributes["r"])
 
             mesh.attributes.new(name="tracker_id", type='INT', domain='POINT')
+            mesh.attributes.new(name="r", type='FLOAT', domain='POINT')
 
             self.trackers_obj = existing_obj
 
         else:
             mesh = bpy.data.meshes.new("tracker_container_mesh")
             mesh.attributes.new(name="tracker_id", type='INT', domain='POINT')
+            mesh.attributes.new(name="r", type='FLOAT', domain='POINT')
 
             obj = bpy.data.objects.new(CONTAINER_NAME, mesh)
             bpy.context.scene.collection.objects.link(obj)
@@ -72,15 +76,16 @@ class TrackerContainer:
         # Update all incoming trackers
         for tracker_data in tracking_data:
             tracker_id = tracker_data["id"]
+            rotation = tracker_data["r"]
             location = mathutils.Vector((tracker_data["x"], tracker_data["y"], tracker_data["z"]))
             
-            self.update_tracker(tracker_id, location)
+            self.update_tracker(tracker_id, location, rotation)
 
         self.prune_out_of_bounds_trackers()
         self.prune_inactive_trackers()
 
 
-    def add_tracker(self, tracker_id, location):
+    def add_tracker(self, tracker_id, location, rotation):
         mesh = self.trackers_obj.data
 
         mesh.vertices.add(1)
@@ -88,6 +93,7 @@ class TrackerContainer:
         mesh.vertices[new_index].co = location
 
         mesh.attributes["tracker_id"].data[new_index].value = tracker_id
+        mesh.attributes["r"].data[new_index].value = rotation
 
         now = datetime.now()
 
@@ -100,16 +106,18 @@ class TrackerContainer:
         # print(f"Added tracker ID {tracker_id} at location {location}.")
 
 
-    def update_tracker(self, tracker_id, location):
+    def update_tracker(self, tracker_id, location, rotation):
         mesh = self.trackers_obj.data
         now = datetime.now()
 
         entry = self.tracker_map.get(tracker_id)
         if entry is not None:
-            mesh.vertices[entry["vertex_id"]].co = location
+            vertex_id = entry["vertex_id"]
+            mesh.vertices[vertex_id].co = location
+            mesh.attributes["r"].data[vertex_id].value = rotation
             entry["updated_at"] = now
         else:
-            self.add_tracker(tracker_id, location)
+            self.add_tracker(tracker_id, location, rotation)
 
         # print(f"Updated tracker ID {tracker_id} to location {location}.")
 
